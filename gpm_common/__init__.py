@@ -23,6 +23,8 @@ from gpm_common.protocol import (
 from gpm_common.game_adapter import GameAdapter, GameAdapterRegistry
 from gpm_common.adapters.minecraft import MinecraftAdapter
 from gpm_common.hashing import compute_sha256
+from gpm_common.heartbeat import Heartbeat
+from gpm_common.reporter import Reporter
 from gpm_common.storage import (
     build_meta_path,
     build_storage_path,
@@ -40,12 +42,14 @@ __all__ = [
     "GameAdapterRegistry",
     "GameInfo",
     "GamePushError",
+    "Heartbeat",
     "LaunchConfig",
     "MinecraftAdapter",
     "Mod",
     "Modpack",
     "ModpackCreate",
     "ModCreate",
+    "Reporter",
     "StatusResponse",
     "SyncResponse",
     "build_storage_path",
