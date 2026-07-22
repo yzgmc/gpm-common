@@ -23,7 +23,13 @@ from gpm_common.protocol import (
 from gpm_common.game_adapter import GameAdapter, GameAdapterRegistry
 from gpm_common.adapters.minecraft import MinecraftAdapter
 from gpm_common.hashing import compute_sha256
-from gpm_common.storage import build_storage_path, safe_join
+from gpm_common.storage import (
+    build_meta_path,
+    build_storage_path,
+    dir_size,
+    ensure_dir,
+    safe_join,
+)
 
 __version__ = "1.0.0"
 __all__ = [
@@ -43,7 +49,10 @@ __all__ = [
     "StatusResponse",
     "SyncResponse",
     "build_storage_path",
+    "build_meta_path",
     "compute_sha256",
+    "dir_size",
+    "ensure_dir",
     "route",
     "safe_join",
 ]
