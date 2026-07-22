@@ -24,6 +24,7 @@ from gpm_common.game_adapter import GameAdapter, GameAdapterRegistry
 from gpm_common.adapters.minecraft import MinecraftAdapter
 from gpm_common.hashing import compute_sha256
 from gpm_common.heartbeat import Heartbeat
+from gpm_common.lights import Light, LightLevel, aggregate_light, compute_server_light
 from gpm_common.reporter import Reporter
 from gpm_common.storage import (
     build_meta_path,
@@ -44,6 +45,8 @@ __all__ = [
     "GamePushError",
     "Heartbeat",
     "LaunchConfig",
+    "Light",
+    "LightLevel",
     "MinecraftAdapter",
     "Mod",
     "Modpack",
@@ -52,8 +55,10 @@ __all__ = [
     "Reporter",
     "StatusResponse",
     "SyncResponse",
+    "aggregate_light",
     "build_storage_path",
     "build_meta_path",
+    "compute_server_light",
     "compute_sha256",
     "dir_size",
     "ensure_dir",

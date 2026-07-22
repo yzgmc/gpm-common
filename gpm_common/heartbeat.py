@@ -10,6 +10,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from gpm_common.lights import Light
+
 
 class Heartbeat(BaseModel):
     """单次心跳上报载荷。所有端共用同一结构。"""
@@ -24,6 +26,10 @@ class Heartbeat(BaseModel):
     status: str = Field(default="online", description="online / degraded / offline")
     protocol_version: str = Field(..., description="协议版本，需与 web-admin 一致")
     sent_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    light: Optional[Light] = Field(
+        default=None,
+        description="状态指示灯（绿/黄/红/off）；服务端由 compute_server_light 计算",
+    )
     metrics: dict[str, Any] = Field(
         default_factory=dict,
         description="自由指标字段，例如 modpack_count / mod_count / storage_used_bytes / uptime_seconds / installed_modpacks",
