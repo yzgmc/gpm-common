@@ -20,6 +20,16 @@ from gpm_common.protocol import (
     GamePushError,
     route,
 )
+from gpm_common.auth import (
+    AuthError,
+    TokenPayload,
+    create_token,
+    decode_token,
+    generate_secret,
+    hash_password,
+    require_token,
+    verify_password,
+)
 from gpm_common.game_adapter import GameAdapter, GameAdapterRegistry
 from gpm_common.adapters.minecraft import MinecraftAdapter
 from gpm_common.hashing import compute_sha256
@@ -38,6 +48,7 @@ __version__ = "1.0.0"
 __all__ = [
     "API_PREFIX",
     "API_VERSION",
+    "AuthError",
     "ErrorCode",
     "GameAdapter",
     "GameAdapterRegistry",
@@ -55,13 +66,20 @@ __all__ = [
     "Reporter",
     "StatusResponse",
     "SyncResponse",
+    "TokenPayload",
     "aggregate_light",
     "build_storage_path",
     "build_meta_path",
     "compute_server_light",
     "compute_sha256",
+    "create_token",
+    "decode_token",
     "dir_size",
     "ensure_dir",
+    "generate_secret",
+    "hash_password",
+    "require_token",
     "route",
     "safe_join",
+    "verify_password",
 ]
