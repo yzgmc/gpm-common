@@ -18,8 +18,8 @@ set -euo pipefail
 DEPLOY_DIR=/opt/gpm
 VENV_DIR=$DEPLOY_DIR/venv
 GITHUB_USER=yzgmc
-# token 从环境变量读，不硬编码（避免泄露）
-GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+# token 从第一个命令行参数读：sudo bash gpm-deploy.sh ghp_xxxx
+GITHUB_TOKEN="${1:-}"
 REPOS=(gpm-common gpm-web-admin gpm-web-server)
 
 # 服务端口
@@ -38,8 +38,8 @@ INIT_PASS="${GPM_INIT_PASS:-admin123}"
 log() { echo -e "\033[36m[$(date +%H:%M:%S)]\033[0m $*"; }
 err() { echo -e "\033[31m[错误]\033[0m $*" >&2; exit 1; }
 
-[[ $EUID -eq 0 ]] || err "请用 root 执行：sudo bash gpm-deploy.sh"
-[[ -n "$GITHUB_TOKEN" ]] || err "请先设置 GitHub token：export GITHUB_TOKEN=ghp_xxxx"
+[[ $EUID -eq 0 ]] || err "请用 root 执行：sudo bash gpm-deploy.sh <github_token>"
+[[ -n "$GITHUB_TOKEN" ]] || err "请传 GitHub token 作为参数：sudo bash gpm-deploy.sh ghp_xxxx"
 
 log "==> 1/8 停止并清理旧服务"
 for svc in gpm-web-admin gpm-web-server gpm-server; do
