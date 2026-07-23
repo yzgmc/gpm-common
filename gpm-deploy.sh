@@ -104,9 +104,9 @@ pip install -r gpm-web-admin/requirements.txt 2>&1 | tail -1
 deactivate
 log "  Python 依赖安装完成"
 
-# 验证关键模块能导入
+# 验证关键模块能导入（必须在 gpm-web-admin 目录下执行，否则找不到 app 包）
 log "  验证模块导入..."
-"$VENV_DIR/bin/python" -c "from app.main import app; print('  导入验证通过')" 2>&1 \
+( cd "$DEPLOY_DIR/gpm-web-admin" && "$VENV_DIR/bin/python" -c "from app.main import app; print('  导入验证通过')" 2>&1 ) \
     || err "模块导入失败，请检查依赖是否完整安装。尝试: $VENV_DIR/bin/pip install httpx pydantic fastapi uvicorn"
 
 log "==> 7/8 生成固定认证密钥 + 创建 systemd 服务"
