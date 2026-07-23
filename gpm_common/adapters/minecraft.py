@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import os
+import re
 import zipfile
 from typing import Optional
 
@@ -153,6 +154,157 @@ class MinecraftAdapter(GameAdapter):
             head, ver = lid.split("-", 1)
             return head, ver
         return lid, ""
+
+    def detect_mod_metadata(self, jar_path: str) -> Optional[dict]:
+        """从单个模组 jar 自动识别游戏版本、模组加载器及版本。
+
+        模组 jar 本质是 zip，按优先级解析内部元数据：
+        1. fabric.mod.json（Fabric）：depends.fabric / depends.minecraft
+        2. META-INF/mods.toml（Forge 1.13+）：loaderVersion / minecraft range
+        3. mcmod.info（Forge 1.12-）：mcversion
+        4. quilt.mod.json（Quilt）：quilt_loader / minecraft
+
+        返回 dict（如 {"game_version": "1.20.1", "mod_loader": "fabric", "mod_loader_version": "0.15.7"}）
+        或 None。识别失败不抛异常。
+        """
+        import json
+
+        if not os.path.exists(jar_path) or not zipfile.is_zipfile(jar_path):
+            return None
+        result: dict = {}
+        try:
+            with zipfile.ZipFile(jar_path) as zf:
+                names = zf.namelist()
+
+                # 1. Fabric: fabric.mod.json（通常在 jar 根目录）
+                fab_name = next(
+                    (n for n in names if n.endswith("fabric.mod.json")), None
+                )
+                if fab_name:
+                    try:
+                        data = json.loads(zf.read(fab_name).decode("utf-8"))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        data = {}
+                    depends = data.get("depends", {}) or {}
+                    if depends.get("fabric") or depends.get("fabric-loader"):
+                        result["mod_loader"] = "fabric"
+                        # fabric 依赖值可能是字符串范围如 ">=0.15.0" 或精确版本
+                        fab_ver = depends.get("fabric") or depends.get("fabric-loader")
+                        ver = self._extract_version(str(fab_ver))
+                        if ver:
+                            result["mod_loader_version"] = ver
+                    if depends.get("minecraft"):
+                        gv = self._extract_version(str(depends["minecraft"]))
+                        if gv:
+                            result["game_version"] = gv
+                    if result:
+                        return result
+
+                # 2. Quilt: quilt.mod.json
+                quilt_name = next(
+                    (n for n in names if n.endswith("quilt.mod.json")), None
+                )
+                if quilt_name:
+                    try:
+                        data = json.loads(zf.read(quilt_name).decode("utf-8"))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        data = {}
+                    ql = (data.get("quilt_loader") or {}).get("depends", {}) or {}
+                    if ql.get("quilt_loader") or ql.get("quilt-base"):
+                        result["mod_loader"] = "quilt"
+                        qv = ql.get("quilt_loader") or ql.get("quilt-base")
+                        ver = self._extract_version(str(qv))
+                        if ver:
+                            result["mod_loader_version"] = ver
+                    if ql.get("minecraft"):
+                        gv = self._extract_version(str(ql["minecraft"]))
+                        if gv:
+                            result["game_version"] = gv
+                    if result:
+                        return result
+
+                # 3. Forge 1.13+: META-INF/mods.toml
+                toml_name = next(
+                    (n for n in names if n == "META-INF/mods.toml"), None
+                )
+                if toml_name:
+                    try:
+                        raw = zf.read(toml_name).decode("utf-8")
+                    except UnicodeDecodeError:
+                        raw = ""
+                    # 简易解析：找 loaderVersion
+                    lv = re.search(r'loaderVersion\s*=\s*\[?\s*"([^"]+)"', raw)
+                    if lv:
+                        result["mod_loader"] = "forge"
+                        ver = self._extract_version(lv.group(1))
+                        if ver:
+                            result["mod_loader_version"] = ver
+                    # minecraft 游戏版本：两种 mods.toml 写法
+                    # a) 依赖块格式：[[dependencies.xxx]] modId="minecraft" ... range="[1.18.2,1.19)"
+                    # b) 内联格式：minecraft = { range = "[...]" }
+                    mc_range = None
+                    dep_block = re.search(
+                        r'modId\s*=\s*"minecraft"[^]]*?range\s*=\s*"([^"]+)"',
+                        raw, re.IGNORECASE | re.DOTALL,
+                    )
+                    if dep_block:
+                        mc_range = dep_block.group(1)
+                    else:
+                        inline = re.search(
+                            r'minecraft\s*=\s*\{[^}]*?range\s*=\s*"([^"]+)"',
+                            raw, re.IGNORECASE,
+                        )
+                        if inline:
+                            mc_range = inline.group(1)
+                    if mc_range:
+                        gv = self._extract_version(mc_range)
+                        if gv:
+                            result["game_version"] = gv
+                    if result:
+                        return result
+
+                # 4. Forge 1.12-: mcmod.info
+                info_name = next(
+                    (n for n in names if n == "mcmod.info"), None
+                )
+                if info_name:
+                    try:
+                        data = json.loads(zf.read(info_name).decode("utf-8"))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        data = []
+                    if isinstance(data, list) and data:
+                        item = data[0] if isinstance(data[0], dict) else {}
+                    elif isinstance(data, dict):
+                        item = data.get("modList", [{}])
+                        item = item[0] if item else {}
+                    else:
+                        item = {}
+                    if item.get("mcversion"):
+                        result["game_version"] = str(item["mcversion"])
+                        result["mod_loader"] = "forge"
+                    if result:
+                        return result
+        except (zipfile.BadZipFile, KeyError, OSError):
+            return None
+        return result or None
+
+    @staticmethod
+    def _extract_version(value: str) -> str:
+        """从依赖范围字符串中提取版本号。
+
+        Fabric/Forge 依赖值常见格式：
+        - 精确版本："0.15.7"
+        - 范围：">=0.15.0"、"[1.20,1.21)"、"(,1.20.1]"、"[1.19,)"
+        取范围中出现的第一个版本号字符串；无版本号则返回原值去除范围符号。
+        """
+        if not value:
+            return ""
+        # 优先匹配形如 1.20.1 / 0.15.7 的版本号
+        m = re.search(r"\d+\.\d+(?:\.\d+)?", value)
+        if m:
+            return m.group(0)
+        # 兜底：去除范围符号
+        return re.sub(r"[()\[\],>=<~ ]", "", value).strip()
 
     def validate_mod(self, file_path: str) -> bool:
         if not super().validate_mod(file_path):

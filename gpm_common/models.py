@@ -59,6 +59,9 @@ class ModBase(BaseModel):
     name: str
     version: str
     game: str
+    game_version: str = Field(default="", description="游戏版本，例如 1.20.1（可由模组 jar 自动识别）")
+    mod_loader: str = Field(default="vanilla", description="模组加载器：vanilla/forge/fabric/quilt")
+    mod_loader_version: Optional[str] = Field(default=None, description="模组加载器版本")
     modpack_id: Optional[str] = Field(default=None, description="所属整合包 ID（可选）")
     description: str = ""
     enabled: bool = Field(default=True, description="是否上架（下架后客户端同步不到）")
