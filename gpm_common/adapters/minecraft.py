@@ -56,6 +56,104 @@ class MinecraftAdapter(GameAdapter):
         has_jar = any(n.endswith(".jar") for n in names)
         return has_manifest or has_overrides or has_jar
 
+    def detect_metadata(self, archive_path: str) -> Optional[dict]:
+        """解析整合包内 manifest.json（CurseForge）或 modrinth.index.json（Modrinth），
+        自动识别游戏版本、模组加载器及版本。裸整合包返回 None。
+
+        CurseForge manifest.json 示例:
+          {"minecraft": {"version": "1.20.1",
+                         "modLoaders": [{"id": "fabric-loader-0.15.7", "primary": true}]}}
+        Modrinth modrinth.index.json 示例:
+          {"dependencies": {"minecraft": "1.20.1", "fabric-loader": "0.15.7", "forge": "47.2.0"}}
+        """
+        import json
+
+        if not os.path.exists(archive_path) or not zipfile.is_zipfile(archive_path):
+            return None
+        result: dict = {}
+        try:
+            with zipfile.ZipFile(archive_path) as zf:
+                names = zf.namelist()
+                # CurseForge 风格
+                manifest_name = next(
+                    (n for n in ("manifest.json", "./manifest.json") if n in names), None
+                )
+                if manifest_name:
+                    try:
+                        data = json.loads(zf.read(manifest_name).decode("utf-8"))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        data = {}
+                    mc = data.get("minecraft", {}) or {}
+                    if mc.get("version"):
+                        result["game_version"] = str(mc["version"])
+                    # modLoaders: [{"id": "fabric-loader-0.15.7", "primary": true}]
+                    loaders = mc.get("modLoaders") or []
+                    primary = next((l for l in loaders if l.get("primary")), None)
+                    if primary is None and loaders:
+                        primary = loaders[0]
+                    if primary and primary.get("id"):
+                        loader, ver = self._parse_cf_loader_id(str(primary["id"]))
+                        if loader:
+                            result["mod_loader"] = loader
+                        if ver:
+                            result["mod_loader_version"] = ver
+                    if result:
+                        return result
+                # Modrinth 风格
+                modrinth_name = next(
+                    (n for n in ("modrinth.index.json", "./modrinth.index.json") if n in names), None
+                )
+                if modrinth_name:
+                    try:
+                        data = json.loads(zf.read(modrinth_name).decode("utf-8"))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        data = {}
+                    deps = data.get("dependencies", {}) or {}
+                    if deps.get("minecraft"):
+                        result["game_version"] = str(deps["minecraft"])
+                    # 依赖键名：fabric-loader / forge / quilt-loader
+                    for key, loader in (
+                        ("fabric-loader", "fabric"),
+                        ("fabric", "fabric"),
+                        ("forge", "forge"),
+                        ("quilt-loader", "quilt"),
+                        ("quilt", "quilt"),
+                    ):
+                        if deps.get(key):
+                            result["mod_loader"] = loader
+                            result["mod_loader_version"] = str(deps[key])
+                            break
+                    if result:
+                        return result
+        except (zipfile.BadZipFile, KeyError, OSError):
+            return None
+        return result or None
+
+    @staticmethod
+    def _parse_cf_loader_id(loader_id: str) -> tuple[str, str]:
+        """解析 CurseForge modLoader id，如 'fabric-loader-0.15.7' -> ('fabric', '0.15.7')。
+
+        id 格式：<loader>-<version>，loader 取已知前缀（fabric-loader/forge/quilt-loader）。
+        """
+        lid = loader_id.lower().strip()
+        # 已知的加载器前缀，需按"更长的前缀"优先匹配，避免 fabric-loader 误匹配成 fabric
+        for prefix, loader in (
+            ("fabric-loader-", "fabric"),
+            ("quilt-loader-", "quilt"),
+            ("fabric-loader", "fabric"),
+            ("quilt-loader", "quilt"),
+            ("forge-", "forge"),
+            ("forge", "forge"),
+        ):
+            if lid.startswith(prefix):
+                ver = lid[len(prefix):].strip("-")
+                return loader, ver
+        # 兜底：取第一个 '-' 之前为 loader
+        if "-" in lid:
+            head, ver = lid.split("-", 1)
+            return head, ver
+        return lid, ""
+
     def validate_mod(self, file_path: str) -> bool:
         if not super().validate_mod(file_path):
             return False

@@ -37,6 +37,14 @@ class GameAdapter(abc.ABC):
 
         return os.path.exists(file_path) and os.path.getsize(file_path) > 0
 
+    def detect_metadata(self, archive_path: str) -> Optional[dict]:
+        """从整合包文件自动识别元数据（游戏版本、模组加载器及版本等）。
+
+        返回 dict（如 {"game_version": "...", "mod_loader": "...", "mod_loader_version": "..."}）
+        或 None（无法识别）。基类默认返回 None，由子类按需实现。
+        """
+        return None
+
     @abc.abstractmethod
     def build_launch_command(
         self,
