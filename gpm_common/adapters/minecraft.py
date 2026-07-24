@@ -312,7 +312,7 @@ class MinecraftAdapter(GameAdapter):
         return file_path.lower().endswith(".jar")
 
     def supported_mod_loaders(self) -> list[str]:
-        return ["vanilla", "forge", "fabric", "quilt"]
+        return ["vanilla", "forge", "neoforge", "fabric", "quilt"]
 
     def build_launch_command(
         self,
@@ -334,6 +334,9 @@ class MinecraftAdapter(GameAdapter):
         elif loader == "forge":
             forge_jar = self._find_forge_jar(install_dir, game_version, loader_version)
             cmd += ["-jar", forge_jar, "--gameDir", install_dir]
+        elif loader == "neoforge":
+            neo_jar = self._find_neoforge_jar(install_dir, loader_version)
+            cmd += ["-jar", neo_jar, "--gameDir", install_dir]
         elif loader in ("fabric", "quilt"):
             loader_jar = self._find_fabric_loader_jar(install_dir, loader)
             cmd += ["-jar", loader_jar, "--gameDir", install_dir, "--gameVersion", game_version]
@@ -373,6 +376,24 @@ class MinecraftAdapter(GameAdapter):
             return candidates[0]
         raise FileNotFoundError(
             f"Forge jar not found in {install_dir} for MC {game_version} / forge {loader_version}"
+        )
+
+    @staticmethod
+    def _find_neoforge_jar(install_dir: str, loader_version: Optional[str]) -> str:
+        # 在 install_dir 下查找 neoforge-<ver>-universal.jar 或类似命名
+        if not os.path.isdir(install_dir):
+            raise FileNotFoundError(f"Install dir not found: {install_dir}")
+        candidates = []
+        for fn in os.listdir(install_dir):
+            low = fn.lower()
+            if low.endswith(".jar") and "neoforge" in low:
+                if loader_version and loader_version in fn:
+                    return os.path.join(install_dir, fn)
+                candidates.append(os.path.join(install_dir, fn))
+        if candidates:
+            return candidates[0]
+        raise FileNotFoundError(
+            f"NeoForge jar not found in {install_dir} / neoforge {loader_version}"
         )
 
     @staticmethod
