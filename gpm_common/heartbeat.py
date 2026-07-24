@@ -19,6 +19,10 @@ class Heartbeat(BaseModel):
     reporter_id: str = Field(..., description="上报端唯一标识，建议 uuid 或稳定名称")
     kind: str = Field(..., description="上报端类型：windows-server / web-server / client")
     name: str = Field(..., description="展示名称")
+    username: Optional[str] = Field(
+        default=None,
+        description="登录用户名（客户端登录后携带）；服务端据此按用户去重，同一用户多端合并为一个条目",
+    )
     base_url: Optional[str] = Field(
         default=None,
         description="服务端可被外部访问的地址（客户端无）；web-admin 据此反向拉取 sync 等",
