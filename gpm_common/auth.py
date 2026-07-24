@@ -166,6 +166,32 @@ def require_token(secret: str):
     return _dependency
 
 
+def require_admin(secret: str):
+    """返回一个 FastAPI 依赖项：要求当前登录用户为管理员（role == "admin"）。
+
+    在 require_token 基础上额外校验角色：令牌缺失/无效 → 401；非管理员 → 403。
+    用于后台管理类写操作（上传/删除/修改、用户管理、系统更新、配置修改、仪表盘），
+    使普通用户（role=user）即使登录拿到 token 也无法调用这些接口。
+    普通用户仍可登录客户端、改自己的密码、浏览整合包/模组列表（读操作开放）。
+
+    用法：
+        from fastapi import Depends
+        @router.post(..., dependencies=[Depends(require_admin(secret))])
+    """
+    from fastapi import Header  # 局部导入，避免 gpm_common 强依赖 fastapi
+
+    def _dependency(authorization: Optional[str] = Header(default=None)) -> TokenPayload:
+        if not authorization or not authorization.lower().startswith("bearer "):
+            raise AuthError("缺少认证令牌", status_code=401)
+        token = authorization.split(" ", 1)[1].strip()
+        payload = decode_token(token, secret)
+        if payload.role != "admin":
+            raise AuthError("需要管理员权限", status_code=403)
+        return payload
+
+    return _dependency
+
+
 def generate_secret() -> str:
     """生成一个随机 secret（用于未配置时的兜底，生产环境应显式配置）。"""
     return secrets.token_urlsafe(48)

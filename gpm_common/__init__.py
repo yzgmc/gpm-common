@@ -27,6 +27,7 @@ from gpm_common.auth import (
     decode_token,
     generate_secret,
     hash_password,
+    require_admin,
     require_token,
     verify_password,
 )
@@ -78,6 +79,7 @@ __all__ = [
     "ensure_dir",
     "generate_secret",
     "hash_password",
+    "require_admin",
     "require_token",
     "route",
     "safe_join",
