@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import zipfile
 from typing import Optional
 
@@ -329,14 +330,346 @@ class MinecraftAdapter(GameAdapter):
         launch_config: LaunchConfig,
         modpack_meta: dict,
     ) -> list[str]:
+        """根据版本 JSON 生成完整启动命令（支持 vanilla/fabric/forge/neoforge/quilt）。
+
+        所有加载器安装后都遵循 Mojang 版本 JSON 规范：
+        - versions/<version_id>/<version_id>.json 含 mainClass / libraries / arguments
+        - 通过 inheritsFrom 继承原版 JSON
+        正确启动方式：解析版本 JSON → 组装 classpath → 取 mainClass → 展开参数。
+
+        找不到版本 JSON 时回退到旧的 -jar 方式（兼容未安装加载器的裸目录）。
+        """
         java = launch_config.java_path or self._detect_java()
         loader = (modpack_meta.get("mod_loader") or "vanilla").lower()
         game_version = modpack_meta.get("game_version", "")
         loader_version = modpack_meta.get("mod_loader_version")
 
-        cmd: list[str] = [java]
-        cmd.extend(launch_config.jvm_args or ["-Xmx4G", "-Xms1G"])
+        # 1. 定位版本 JSON：按加载器类型推断 version_id
+        version_id = self._resolve_version_id(install_dir, loader, game_version, loader_version)
+        version_json = None
+        if version_id:
+            version_json = self._load_version_json(install_dir, version_id)
 
+        # 2. 无版本 JSON → 回退旧逻辑（兼容裸目录/未完整安装）
+        if not version_json:
+            return self._legacy_launch_command(
+                java, launch_config, loader, game_version, loader_version, install_dir
+            )
+
+        # 3. 合并 inheritsFrom 链（加载器 JSON 继承原版 JSON）
+        merged = self._merge_inherited(install_dir, version_json)
+
+        # 4. 组装 classpath（libraries + 主 jar）
+        classpath = self._build_classpath(install_dir, merged)
+
+        # 5. 提取 natives（LWJGL 等 native 库到临时目录）
+        natives_dir = self._extract_natives(install_dir, merged)
+
+        # 6. 取 mainClass
+        main_class = merged.get("mainClass") or "net.minecraft.client.main.Main"
+
+        # 7. 组装命令
+        cmd: list[str] = [java]
+        cmd.extend(launch_config.jvm_args or ["-Xmx4G", "-Xms2G"])
+        cmd.append(f"-Djava.library.path={natives_dir}")
+        cmd.append("-cp")
+        cmd.append(classpath)
+        cmd.append(main_class)
+
+        # 8. 游戏参数（从 arguments.game 或旧版 minecraftArguments 展开）
+        game_args = self._expand_game_args(merged, install_dir, version_id)
+        cmd.extend(game_args)
+        cmd.extend(launch_config.extra_args or [])
+        return cmd
+
+    # ---------- 版本 JSON 解析辅助 ----------
+
+    @staticmethod
+    def _resolve_version_id(
+        install_dir: str, loader: str, game_version: str, loader_version: Optional[str]
+    ) -> str:
+        """根据加载器类型与目录实际内容推断 version_id。"""
+        versions_dir = os.path.join(install_dir, "versions")
+        if not os.path.isdir(versions_dir):
+            return ""
+        # 按加载器类型匹配版本目录名
+        prefixes = {
+            "fabric": ["fabric-loader"],
+            "quilt": ["quilt-loader"],
+            "forge": [f"{game_version}-forge", "forge"],
+            "neoforge": [f"{game_version}-neoforge", "neoforge"],
+            "vanilla": [game_version] if game_version else [],
+        }
+        candidates = prefixes.get(loader, [])
+        # 优先精确匹配
+        for prefix in candidates:
+            if loader_version:
+                target = f"{prefix}-{loader_version}" if not prefix.endswith(loader_version) else prefix
+                if os.path.isfile(os.path.join(versions_dir, target, f"{target}.json")):
+                    return target
+            for name in os.listdir(versions_dir):
+                if name.startswith(prefix) and os.path.isfile(
+                    os.path.join(versions_dir, name, f"{name}.json")
+                ):
+                    return name
+        # 兜底：取 versions 下任意一个含 .json 的目录
+        for name in sorted(os.listdir(versions_dir)):
+            if os.path.isfile(os.path.join(versions_dir, name, f"{name}.json")):
+                return name
+        return ""
+
+    @staticmethod
+    def _load_version_json(install_dir: str, version_id: str) -> Optional[dict]:
+        """读取 versions/<id>/<id>.json。失败返回 None。"""
+        import json
+
+        path = os.path.join(install_dir, "versions", version_id, f"{version_id}.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else None
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def _merge_inherited(self, install_dir: str, version_json: dict) -> dict:
+        """合并 inheritsFrom 链：子版本字段覆盖父版本。
+
+        加载器版本 JSON 通常 inheritsFrom 原版版本 JSON，需递归合并
+        libraries（追加）、arguments（追加）、assetIndex/mainClass（子覆盖）。
+        """
+        merged = {
+            "mainClass": version_json.get("mainClass"),
+            "assetIndex": version_json.get("assetIndex"),
+            "libraries": list(version_json.get("libraries", [])),
+            "arguments": {
+                "game": list(version_json.get("arguments", {}).get("game", [])),
+                "jvm": list(version_json.get("arguments", {}).get("jvm", [])),
+            },
+            "minecraftArguments": version_json.get("minecraftArguments", ""),
+        }
+        parent_id = version_json.get("inheritsFrom")
+        if parent_id:
+            parent = self._load_version_json(install_dir, parent_id)
+            if parent:
+                parent_merged = self._merge_inherited(install_dir, parent)
+                # 父版本 libraries 在前，子版本追加在后
+                merged["libraries"] = parent_merged["libraries"] + merged["libraries"]
+                merged["arguments"]["game"] = parent_merged["arguments"]["game"] + merged["arguments"]["game"]
+                merged["arguments"]["jvm"] = parent_merged["arguments"]["jvm"] + merged["arguments"]["jvm"]
+                # 子版本未指定的字段用父版本兜底
+                if not merged["mainClass"]:
+                    merged["mainClass"] = parent_merged["mainClass"]
+                if not merged["assetIndex"]:
+                    merged["assetIndex"] = parent_merged["assetIndex"]
+                if not merged["minecraftArguments"]:
+                    merged["minecraftArguments"] = parent_merged["minecraftArguments"]
+        return merged
+
+    @staticmethod
+    def _lib_path(install_dir: str, lib: dict) -> str:
+        """把 library 的 name（group:artifact:version）转成 jar 路径。"""
+        name = lib.get("name", "")
+        parts = name.split(":")
+        if len(parts) < 3:
+            return ""
+        group, artifact, version = parts[0], parts[1], parts[2]
+        # group 的 . 转 /
+        group_path = group.replace(".", "/")
+        # 部分 library 有 classifier（如 natives-windows）：name 含第四段
+        classifier = parts[3] if len(parts) > 3 else ""
+        filename = f"{artifact}-{version}"
+        if classifier:
+            filename += f"-{classifier}"
+        filename += ".jar"
+        return os.path.join(install_dir, "libraries", group_path, artifact, version, filename)
+
+    @staticmethod
+    def _lib_allowed(lib: dict) -> bool:
+        """按 rules 判断 library 是否适用于当前平台（Windows x64）。
+
+        无 rules → 允许；有 rules 则所有 rule 的 action=allow 需满足。
+        """
+        import sys
+
+        rules = lib.get("rules", [])
+        if not rules:
+            return True
+        allowed = False
+        for rule in rules:
+            action = rule.get("action")
+            os_rule = rule.get("os")
+            if not os_rule:
+                # 无 os 限制的规则：allow 直接允许，disallow 直接禁用
+                if action == "allow":
+                    allowed = True
+                else:
+                    return False
+            else:
+                # 检查 os 是否匹配（客户端在 Windows 运行）
+                os_name = os_rule.get("name", "")
+                if sys.platform == "win32" and os_name == "windows":
+                    allowed = action == "allow"
+                elif sys.platform.startswith("linux") and os_name == "linux":
+                    allowed = action == "allow"
+                elif sys.platform == "darwin" and os_name == "osx":
+                    allowed = action == "allow"
+        return allowed
+
+    def _build_classpath(self, install_dir: str, merged: dict) -> str:
+        """从 merged libraries 组装 classpath 字符串（含主 jar）。"""
+        sep = ";" if sys.platform == "win32" else ":"
+        paths: list[str] = []
+        for lib in merged.get("libraries", []):
+            if not self._lib_allowed(lib):
+                continue
+            p = self._lib_path(install_dir, lib)
+            if p and os.path.isfile(p):
+                paths.append(p)
+        # 主 jar：versions/<version_id>/<version_id>.jar
+        # 从 assetIndex 或 inheritsFrom 推断 version_id 对应的 jar
+        # 简化：取 versions 下与 mainClass 对应的 client jar
+        versions_dir = os.path.join(install_dir, "versions")
+        if os.path.isdir(versions_dir):
+            # 优先找原版 client jar（无 -forge/-fabric 后缀的）
+            for name in sorted(os.listdir(versions_dir), key=lambda n: ("-" in n, len(n))):
+                jar = os.path.join(versions_dir, name, f"{name}.jar")
+                if os.path.isfile(jar):
+                    paths.append(jar)
+                    break
+        return sep.join(paths)
+
+    @staticmethod
+    def _extract_natives(install_dir: str, merged: dict) -> str:
+        """提取 native 库（LWJGL 等）到临时目录，返回路径。
+
+        natives 字段在 library 里标记平台，需解压对应 jar 的 .dll/.so 到 natives 目录。
+        无 native 库时返回 versions/<id>/<id>-natives 占位路径。
+        """
+        import sys
+        import tempfile
+        import zipfile
+
+        # 固定 natives 目录（避免每次启动都解压）
+        natives_dir = os.path.join(install_dir, "versions", "natives")
+        os.makedirs(natives_dir, exist_ok=True)
+
+        natives_ext = ".dll" if sys.platform == "win32" else (".so" if sys.platform.startswith("linux") else ".dylib")
+        plat_key = "windows" if sys.platform == "win32" else ("linux" if sys.platform.startswith("linux") else "osx")
+
+        for lib in merged.get("libraries", []):
+            natives = lib.get("natives")
+            if not natives:
+                continue
+            classifier = natives.get(plat_key)
+            if not classifier:
+                continue
+            # 带 classifier 的 jar 路径
+            name = lib.get("name", "")
+            parts = name.split(":")
+            if len(parts) < 3:
+                continue
+            group, artifact, version = parts[0], parts[1], parts[2]
+            group_path = group.replace(".", "/")
+            jar_name = f"{artifact}-{version}-{classifier}.jar"
+            jar_path = os.path.join(install_dir, "libraries", group_path, artifact, version, jar_name)
+            if not os.path.isfile(jar_path):
+                continue
+            # 解压 native 文件
+            try:
+                with zipfile.ZipFile(jar_path) as zf:
+                    for member in zf.namelist():
+                        # 只提取 native 文件，跳过 META-INF
+                        if member.startswith("META-INF"):
+                            continue
+                        if member.endswith(natives_ext):
+                            target = os.path.join(natives_dir, os.path.basename(member))
+                            with open(target, "wb") as out:
+                                out.write(zf.read(member))
+            except (zipfile.BadZipFile, OSError):
+                continue
+        return natives_dir
+
+    def _expand_game_args(self, merged: dict, install_dir: str, version_id: str) -> list[str]:
+        """展开游戏参数：arguments.game（列表）或旧版 minecraftArguments（字符串）。"""
+        import uuid as _uuid
+
+        # 离线模式：固定玩家名/UUID/Token（不依赖微软账号登录）
+        player_name = "Player"
+        player_uuid = str(_uuid.uuid5(_uuid.NAMESPACE_DNS, player_name))
+        access_token = "0"
+
+        # 公共替换值
+        replacements = {
+            "${auth_player_name}": player_name,
+            "${auth_uuid}": player_uuid,
+            "${auth_access_token}": access_token,
+            "${user_type}": "offline",
+            "${version_name}": version_id,
+            "${game_directory}": install_dir,
+            "${assets_root}": os.path.join(install_dir, "assets"),
+            "${assets_index_name}": str((merged.get("assetIndex") or {}).get("id", "")),
+            "${version_type}": "release",
+            "${user_properties}": "{}",
+        }
+
+        args: list[str] = []
+        game_args = merged.get("arguments", {}).get("game", [])
+        if game_args:
+            for arg in game_args:
+                if isinstance(arg, str):
+                    args.append(self._apply_replacements(arg, replacements))
+                elif isinstance(arg, dict):
+                    # 带条件的参数，简化处理：符合条件则加入
+                    rules = arg.get("rules", [])
+                    value = arg.get("value", [])
+                    if self._rules_pass(rules):
+                        if isinstance(value, list):
+                            for v in value:
+                                args.append(self._apply_replacements(str(v), replacements))
+                        else:
+                            args.append(self._apply_replacements(str(value), replacements))
+        else:
+            # 旧版（1.12 及以下）：minecraftArguments 是空格分隔的字符串
+            mc_args = merged.get("minecraftArguments", "")
+            if mc_args:
+                for a in mc_args.split():
+                    args.append(self._apply_replacements(a, replacements))
+        return args
+
+    @staticmethod
+    def _apply_replacements(s: str, replacements: dict) -> str:
+        """对字符串应用所有占位符替换。"""
+        for k, v in replacements.items():
+            s = s.replace(k, v)
+        return s
+
+    @staticmethod
+    def _rules_pass(rules: list) -> bool:
+        """简化判断规则是否满足（Windows 平台优先）。"""
+        import sys
+
+        if not rules:
+            return True
+        for rule in rules:
+            action = rule.get("action")
+            os_rule = rule.get("os")
+            if os_rule:
+                os_name = os_rule.get("name", "")
+                plat = "windows" if sys.platform == "win32" else ("linux" if sys.platform.startswith("linux") else "osx")
+                if os_name != plat:
+                    return False
+            if action == "disallow":
+                return False
+        return True
+
+    def _legacy_launch_command(
+        self, java: str, launch_config: LaunchConfig,
+        loader: str, game_version: str, loader_version: Optional[str],
+        install_dir: str,
+    ) -> list[str]:
+        """无版本 JSON 时的回退启动命令（旧逻辑，兼容裸目录）。"""
+        cmd: list[str] = [java]
+        cmd.extend(launch_config.jvm_args or ["-Xmx4G", "-Xms2G"])
         if loader == "vanilla":
             jar = os.path.join(install_dir, f"minecraft_server.{game_version}.jar")
             cmd += ["-jar", jar, "--gameDir", install_dir]
@@ -351,7 +684,6 @@ class MinecraftAdapter(GameAdapter):
             cmd += ["-jar", loader_jar, "--gameDir", install_dir, "--gameVersion", game_version]
         else:
             raise ValueError(f"Unsupported mod loader: {loader}")
-
         cmd.extend(launch_config.extra_args or [])
         return cmd
 
