@@ -360,7 +360,8 @@ class MinecraftAdapter(GameAdapter):
         merged = self._merge_inherited(install_dir, version_json)
 
         # 4. 组装 classpath（libraries + 主 jar）
-        classpath = self._build_classpath(install_dir, merged)
+        # 传入 game_version 与 version_json 的 inheritsFrom 链，确保原版 client jar 在 classpath
+        classpath = self._build_classpath(install_dir, merged, game_version, version_json)
 
         # 5. 提取 natives（LWJGL 等 native 库到临时目录）
         natives_dir = self._extract_natives(install_dir, merged)
@@ -517,8 +518,19 @@ class MinecraftAdapter(GameAdapter):
                     allowed = action == "allow"
         return allowed
 
-    def _build_classpath(self, install_dir: str, merged: dict) -> str:
-        """从 merged libraries 组装 classpath 字符串（含主 jar）。"""
+    def _build_classpath(
+        self, install_dir: str, merged: dict, game_version: str = "", version_json: Optional[dict] = None
+    ) -> str:
+        """从 merged libraries 组装 classpath 字符串（含原版 client jar）。
+
+        原版 client jar 必须在 classpath 上，否则 Fabric/Quilt 的 game provider
+        会报 "couldn't locate the game!"。
+
+        查找顺序：
+        1. version_json 的 inheritsFrom 链根版本 → versions/<root_id>/<root_id>.jar
+        2. game_version → versions/<game_version>/<game_version>.jar
+        3. 兜底：versions 下第一个含 .jar 的目录（优先无 - 后缀的）
+        """
         sep = ";" if sys.platform == "win32" else ":"
         paths: list[str] = []
         for lib in merged.get("libraries", []):
@@ -527,18 +539,62 @@ class MinecraftAdapter(GameAdapter):
             p = self._lib_path(install_dir, lib)
             if p and os.path.isfile(p):
                 paths.append(p)
-        # 主 jar：versions/<version_id>/<version_id>.jar
-        # 从 assetIndex 或 inheritsFrom 推断 version_id 对应的 jar
-        # 简化：取 versions 下与 mainClass 对应的 client jar
+
+        # 主 jar：原版 client jar
+        main_jar = self._find_vanilla_client_jar(install_dir, game_version, version_json)
+        if main_jar:
+            paths.append(main_jar)
+        return sep.join(paths)
+
+    def _find_vanilla_client_jar(
+        self, install_dir: str, game_version: str, version_json: Optional[dict] = None
+    ) -> str:
+        """定位原版 client jar，返回绝对路径。找不到返回空串。
+
+        1. 沿 inheritsFrom 链找根版本 → versions/<root_id>/<root_id>.jar
+        2. game_version → versions/<game_version>/<game_version>.jar
+        3. 兜底扫描 versions 目录
+        """
         versions_dir = os.path.join(install_dir, "versions")
+
+        # 1. 沿 inheritsFrom 链找根版本
+        if version_json:
+            root_id = self._find_inherits_root(install_dir, version_json)
+            if root_id:
+                jar = os.path.join(versions_dir, root_id, f"{root_id}.jar")
+                if os.path.isfile(jar):
+                    return jar
+
+        # 2. 用 game_version 直接定位
+        if game_version:
+            jar = os.path.join(versions_dir, game_version, f"{game_version}.jar")
+            if os.path.isfile(jar):
+                return jar
+
+        # 3. 兜底：扫描 versions 目录，优先无 - 后缀的（原版）
         if os.path.isdir(versions_dir):
-            # 优先找原版 client jar（无 -forge/-fabric 后缀的）
             for name in sorted(os.listdir(versions_dir), key=lambda n: ("-" in n, len(n))):
                 jar = os.path.join(versions_dir, name, f"{name}.jar")
                 if os.path.isfile(jar):
-                    paths.append(jar)
-                    break
-        return sep.join(paths)
+                    return jar
+        return ""
+
+    def _find_inherits_root(self, install_dir: str, version_json: dict) -> str:
+        """沿 inheritsFrom 链找根版本 id（没有 inheritsFrom 的那个）。"""
+        seen: set[str] = set()
+        current = version_json
+        current_id = current.get("id", "")
+        for _ in range(10):  # 防环
+            parent_id = current.get("inheritsFrom")
+            if not parent_id or parent_id in seen:
+                return current_id or parent_id or ""
+            seen.add(parent_id)
+            parent = self._load_version_json(install_dir, parent_id)
+            if not parent:
+                return parent_id
+            current = parent
+            current_id = parent_id
+        return current_id
 
     @staticmethod
     def _extract_natives(install_dir: str, merged: dict) -> str:
