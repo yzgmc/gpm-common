@@ -28,6 +28,10 @@ class LaunchConfig(BaseModel):
     uuid: Optional[str] = Field(default=None, description="玩家 UUID（无连字符 32 位 hex）；None 时离线生成")
     access_token: Optional[str] = Field(default=None, description="MC access_token；None 时用占位 0")
     user_type: str = Field(default="offline", description="账号类型：offline / msa")
+    # 版本隔离：游戏运行目录（saves/mods/config 落点）。None 时用 install_dir（共享）。
+    # 设为 versions/<id>/ 时，该版本的存档/模组/配置与其它版本互不干扰（HMCL 风格隔离）。
+    # classpath/libraries/assets 仍从 install_dir 解析（共享，省磁盘）。
+    game_dir: Optional[str] = Field(default=None, description="游戏运行目录；None=与 install_dir 共享，否则隔离")
 
 
 class ModpackBase(BaseModel):

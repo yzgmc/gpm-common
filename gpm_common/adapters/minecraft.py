@@ -344,8 +344,16 @@ class MinecraftAdapter(GameAdapter):
         game_version = modpack_meta.get("game_version", "")
         loader_version = modpack_meta.get("mod_loader_version")
 
-        # 1. 定位版本 JSON：按加载器类型推断 version_id
-        version_id = self._resolve_version_id(install_dir, loader, game_version, loader_version)
+        # 1. 定位版本 JSON：优先用 modpack_meta["version_id"] 显式指定（版本管理器按版本启动），
+        #    否则按加载器类型自动推断。
+        version_id = ""
+        explicit_vid = modpack_meta.get("version_id") or ""
+        if explicit_vid and os.path.isfile(
+            os.path.join(install_dir, "versions", explicit_vid, f"{explicit_vid}.json")
+        ):
+            version_id = explicit_vid
+        if not version_id:
+            version_id = self._resolve_version_id(install_dir, loader, game_version, loader_version)
         version_json = None
         if version_id:
             version_json = self._load_version_json(install_dir, version_id)
@@ -671,6 +679,10 @@ class MinecraftAdapter(GameAdapter):
             access_token = "0"
             user_type = "offline"
 
+        # 版本隔离：game_dir 由调用方指定（版本管理器隔离模式），None 时与 install_dir 共享。
+        # saves/mods/config 落在 game_dir；libraries/assets 仍从 install_dir 解析（共享省磁盘）。
+        game_dir = launch_config.game_dir or install_dir
+
         # 公共替换值
         replacements = {
             "${auth_player_name}": player_name,
@@ -678,7 +690,7 @@ class MinecraftAdapter(GameAdapter):
             "${auth_access_token}": access_token,
             "${user_type}": user_type,
             "${version_name}": version_id,
-            "${game_directory}": install_dir,
+            "${game_directory}": game_dir,
             "${assets_root}": os.path.join(install_dir, "assets"),
             "${assets_index_name}": str((merged.get("assetIndex") or {}).get("id", "")),
             "${version_type}": "release",
