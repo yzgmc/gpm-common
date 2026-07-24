@@ -112,13 +112,14 @@ class MinecraftAdapter(GameAdapter):
                     deps = data.get("dependencies", {}) or {}
                     if deps.get("minecraft"):
                         result["game_version"] = str(deps["minecraft"])
-                    # 依赖键名：fabric-loader / forge / quilt-loader
+                    # 依赖键名：fabric-loader / forge / quilt-loader / neoforge
                     for key, loader in (
                         ("fabric-loader", "fabric"),
                         ("fabric", "fabric"),
-                        ("forge", "forge"),
                         ("quilt-loader", "quilt"),
                         ("quilt", "quilt"),
+                        ("neoforge", "neoforge"),
+                        ("forge", "forge"),
                     ):
                         if deps.get(key):
                             result["mod_loader"] = loader
@@ -134,15 +135,17 @@ class MinecraftAdapter(GameAdapter):
     def _parse_cf_loader_id(loader_id: str) -> tuple[str, str]:
         """解析 CurseForge modLoader id，如 'fabric-loader-0.15.7' -> ('fabric', '0.15.7')。
 
-        id 格式：<loader>-<version>，loader 取已知前缀（fabric-loader/forge/quilt-loader）。
+        id 格式：<loader>-<version>，loader 取已知前缀（fabric-loader/forge/quilt-loader/neoforge）。
         """
         lid = loader_id.lower().strip()
-        # 已知的加载器前缀，需按"更长的前缀"优先匹配，避免 fabric-loader 误匹配成 fabric
+        # 已知的加载器前缀，需按"更长的前缀"优先匹配，避免 neoforge 被误匹配成 forge
         for prefix, loader in (
             ("fabric-loader-", "fabric"),
             ("quilt-loader-", "quilt"),
             ("fabric-loader", "fabric"),
             ("quilt-loader", "quilt"),
+            ("neoforge-", "neoforge"),
+            ("neoforge", "neoforge"),
             ("forge-", "forge"),
             ("forge", "forge"),
         ):
@@ -160,9 +163,10 @@ class MinecraftAdapter(GameAdapter):
 
         模组 jar 本质是 zip，按优先级解析内部元数据：
         1. fabric.mod.json（Fabric）：depends.fabric / depends.minecraft
-        2. META-INF/mods.toml（Forge 1.13+）：loaderVersion / minecraft range
-        3. mcmod.info（Forge 1.12-）：mcversion
-        4. quilt.mod.json（Quilt）：quilt_loader / minecraft
+        2. META-INF/neoforge.mods.toml（NeoForge）：loaderVersion / minecraft range
+        3. META-INF/mods.toml（Forge 1.13+）：loaderVersion / minecraft range
+        4. mcmod.info（Forge 1.12-）：mcversion
+        5. quilt.mod.json（Quilt）：quilt_loader / minecraft
 
         返回 dict（如 {"game_version": "1.20.1", "mod_loader": "fabric", "mod_loader_version": "0.15.7"}）
         或 None。识别失败不抛异常。
@@ -223,11 +227,16 @@ class MinecraftAdapter(GameAdapter):
                     if result:
                         return result
 
-                # 3. Forge 1.13+: META-INF/mods.toml
+                # 3. NeoForge: META-INF/neoforge.mods.toml（格式同 mods.toml）
+                #    Forge 1.13+: META-INF/mods.toml
+                # NeoForge 优先匹配，避免误判为 forge；两者 mods.toml 格式一致，统一解析
                 toml_name = next(
+                    (n for n in names if n == "META-INF/neoforge.mods.toml"), None
+                ) or next(
                     (n for n in names if n == "META-INF/mods.toml"), None
                 )
                 if toml_name:
+                    loader = "neoforge" if "neoforge" in toml_name else "forge"
                     try:
                         raw = zf.read(toml_name).decode("utf-8")
                     except UnicodeDecodeError:
@@ -235,7 +244,7 @@ class MinecraftAdapter(GameAdapter):
                     # 简易解析：找 loaderVersion
                     lv = re.search(r'loaderVersion\s*=\s*\[?\s*"([^"]+)"', raw)
                     if lv:
-                        result["mod_loader"] = "forge"
+                        result["mod_loader"] = loader
                         ver = self._extract_version(lv.group(1))
                         if ver:
                             result["mod_loader_version"] = ver
