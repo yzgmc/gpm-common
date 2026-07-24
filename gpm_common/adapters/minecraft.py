@@ -377,7 +377,9 @@ class MinecraftAdapter(GameAdapter):
         cmd.append(main_class)
 
         # 8. 游戏参数（从 arguments.game 或旧版 minecraftArguments 展开）
-        game_args = self._expand_game_args(merged, install_dir, version_id)
+        # 正版账号信息由 LaunchConfig 透传：username/uuid/access_token 非空时用正版，
+        # 否则回退离线模式（Player / 固定 UUID / 占位 token）
+        game_args = self._expand_game_args(merged, install_dir, version_id, launch_config)
         cmd.extend(game_args)
         cmd.extend(launch_config.extra_args or [])
         return cmd
@@ -589,21 +591,36 @@ class MinecraftAdapter(GameAdapter):
                 continue
         return natives_dir
 
-    def _expand_game_args(self, merged: dict, install_dir: str, version_id: str) -> list[str]:
-        """展开游戏参数：arguments.game（列表）或旧版 minecraftArguments（字符串）。"""
+    def _expand_game_args(
+        self, merged: dict, install_dir: str, version_id: str, launch_config: "LaunchConfig"
+    ) -> list[str]:
+        """展开游戏参数：arguments.game（列表）或旧版 minecraftArguments（字符串）。
+
+        账号信息取自 launch_config：
+        - username/uuid/access_token 三者齐全 → 正版（msa）模式启动
+        - 否则 → 离线模式（固定 Player 名 + uuid5 + 占位 token）
+        """
         import uuid as _uuid
 
-        # 离线模式：固定玩家名/UUID/Token（不依赖微软账号登录）
-        player_name = "Player"
-        player_uuid = str(_uuid.uuid5(_uuid.NAMESPACE_DNS, player_name))
-        access_token = "0"
+        if launch_config.username and launch_config.uuid and launch_config.access_token:
+            # 微软正版账号
+            player_name = launch_config.username
+            player_uuid = launch_config.uuid
+            access_token = launch_config.access_token
+            user_type = "msa"
+        else:
+            # 离线模式：固定玩家名/UUID/Token（不依赖微软账号登录）
+            player_name = "Player"
+            player_uuid = str(_uuid.uuid5(_uuid.NAMESPACE_DNS, player_name))
+            access_token = "0"
+            user_type = "offline"
 
         # 公共替换值
         replacements = {
             "${auth_player_name}": player_name,
             "${auth_uuid}": player_uuid,
             "${auth_access_token}": access_token,
-            "${user_type}": "offline",
+            "${user_type}": user_type,
             "${version_name}": version_id,
             "${game_directory}": install_dir,
             "${assets_root}": os.path.join(install_dir, "assets"),

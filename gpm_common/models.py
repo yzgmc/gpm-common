@@ -23,6 +23,11 @@ class LaunchConfig(BaseModel):
     java_path: Optional[str] = Field(default=None, description="java 可执行文件路径，None 时使用系统默认")
     jvm_args: list[str] = Field(default_factory=list, description="JVM 参数，例如 -Xmx4G")
     extra_args: list[str] = Field(default_factory=list, description="额外的启动参数")
+    # 账号信息：用微软正版账号登录后填充，留空则按离线模式启动
+    username: Optional[str] = Field(default=None, description="玩家名；None 时用离线模式 Player")
+    uuid: Optional[str] = Field(default=None, description="玩家 UUID（无连字符 32 位 hex）；None 时离线生成")
+    access_token: Optional[str] = Field(default=None, description="MC access_token；None 时用占位 0")
+    user_type: str = Field(default="offline", description="账号类型：offline / msa")
 
 
 class ModpackBase(BaseModel):
